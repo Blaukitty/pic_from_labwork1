@@ -3,6 +3,7 @@
 #include <fstream>
 #include <vector>
 #include <thread>
+#include <algorithm>
 
 Image::Image(): pixels(nullptr) {}
 
@@ -82,16 +83,122 @@ void Image::clearMemory() {
     pixels = nullptr;
 }
 
-void Image::rotateClockwise() {
+static void rotateClockwiseWorker(  //копирует строки перевернутой на 90 градусов картинки
+    Pixel** pixels,
+    Pixel** rotated,
+    int oldW,
+    int oldH,
+    int i_start,
+    int i_end
+) {
+    for (int i = i_start; i < i_end; ++i) {
+        for (int j = 0; j < oldW; ++j) {
+            rotated[j][oldH - i - 1] = pixels[i][j];
+        }
+    }
+}
+
+// отсюда начинаем разбивать на потоки, до этого код евы без изменений
+void Image::rotateClockwise() {  // по часовой стрелке
+    int oldW = info_header.width;
+    int oldH = std::abs(info_header.height);
+
+    // новый буфер изо
     Pixel **rotated = new Pixel*[info_header.width];
-    for (int i = 0; i < info_header.width; ++i) {
-        rotated[i] = new Pixel[std::abs(info_header.height)];
+    for (int i = 0; i < oldW; ++i) {
+        rotated[i] = new Pixel[oldH];
     }
 
-    for (int i = 0; i < std::abs(info_header.height); ++i) {
-        for (int j = 0; j < info_header.width; ++j) {
-            rotated[j][std::abs(info_header.height)-i-1] = pixels[i][j];
+    // определяем число потоков
+    unsigned int numThr = std::thread::hardware_concurrency();
+    if (numThr == 0) {
+        numThr = 2;
+    }
+
+    int chunk = (OldW) / numThreads;
+    int rem = (OldH) % numThreads;
+
+    std::vector<std::thread> threads;
+    threads.reserve(numThr);
+
+    int cur = 0;
+    for (unsigned int t = 0; t < numThreads; ++t) {
+        int start = cur;
+        int end   = cur + chunk + (t < rem ? 1 : 0); //Запуск потока, который внутри вызовет rotateClockwiseWorker
+        threads.emplace_back(
+            rotateClockwiseWorker,
+            pixels,      
+            rotated,     
+            oldW,        
+            oldH,        
+            start,       
+            end          
+        );
+        cur = end;
+    }
+
+    for (auto &t : threads) {  // ожидаем конца всех потоков
+        t.join();
+    }
+    
+    clearMemory();
+    pixels = rotated;
+    std::swap(info_header.width, info_header.height);
+    rotated = nullptr;
+}
+
+static void rotateCounterClockwiseWorker( 
+    Pixel** pixels,
+    Pixel** rotated,
+    int oldW,
+    int oldH,
+    int i_start,
+    int i_end
+) {
+    for (int i = i_start; i < i_end; ++i) {
+        for (int j = 0; j < oldW; ++j) {
+            // Формула поворота против часовой стрелки
+            rotated[oldW - j - 1][i] = pixels[i][j];
         }
+    }
+}
+
+void Image::rotateCounterClockwise() { // против часовой стрелки, все аналогично
+    int oldW = info_header.width;
+    int oldH = std::abs(info_header.height);
+    
+    Pixel **rotated = new Pixel*[info_header.width];
+    for (int i = 0; i < OldW; ++i) {
+        rotated[i] = new Pixel[OldH];
+    }
+
+    unsigned int numThreads = std::thread::hardware_concurrency();
+    if (numThreads == 0) numThreads = 2;
+
+    int chunk = oldH / numThr;
+    int rem   = oldH % numThr;
+
+    std::vector<std::thread> threads;
+    threads.reserve(numThreads);
+
+    int cur = 0;
+    for (unsigned int t = 0; t < numThreads; ++t) {
+        int start = cur;
+        int end   = cur + chunk + (t < rem ? 1 : 0);
+        threads.emplace_back(
+            rotateCounterClockwiseWorker,
+            pixels,
+            rotated,
+            oldW,
+            oldH,
+            start,
+            end
+        );
+        cur = end;
+    }
+
+    for (auto &th : threads) {
+        th.join();
     }
 
     clearMemory();
@@ -100,22 +207,40 @@ void Image::rotateClockwise() {
     rotated = nullptr;
 }
 
-void Image::rotateCounterClockwise() {
-    Pixel **rotated = new Pixel*[info_header.width];
-    for (int i = 0; i < info_header.width; ++i) {
-        rotated[i] = new Pixel[std::abs(info_header.height)];
-    }
+static void gaussianBlurWorker(
+    Pixel** pixels,
+    Pixel** temporary,
+    int width,
+    int height,
+    int y_start,
+    int y_end
+) {
+    const int kSize = 3;
+    const float kernel[kSize][kSize] = {
+        {1/16.f, 2/16.f, 1/16.f},
+        {2/16.f, 4/16.f, 2/16.f},
+        {1/16.f, 2/16.f, 1/16.f}
+    };
 
-    for (int i = 0; i < std::abs(info_header.height); ++i) {
-        for (int j = 0; j < info_header.width; ++j) {
-            rotated[info_header.width-j-1][i] = pixels[i][j];
+    for (int y = y_start; y < y_end; ++y) {
+        // Пропускаем граничные строки — они копируются отдельно
+        if (y < 1 || y >= height - 1) continue;
+
+        for (int x = 1; x < width - 1; ++x) {
+            float red = 0.f, green = 0.f, blue = 0.f;
+            for (int ky = -1; ky <= 1; ++ky) {
+                for (int kx = -1; kx <= 1; ++kx) {
+                    Pixel &p = pixels[y + ky][x + kx];
+                    red   += p.red   * kernel[ky + 1][kx + 1];
+                    green += p.green * kernel[ky + 1][kx + 1];
+                    blue  += p.blue  * kernel[ky + 1][kx + 1];
+                }
+            }
+            temporary[y][x].red   = static_cast<uint8_t>(red);
+            temporary[y][x].green = static_cast<uint8_t>(green);
+            temporary[y][x].blue  = static_cast<uint8_t>(blue);
         }
     }
-
-    clearMemory();
-    pixels = rotated;
-    std::swap(info_header.width, info_header.height);
-    rotated = nullptr;
 }
 
 void Image::gaussianBlur() {
@@ -129,27 +254,40 @@ void Image::gaussianBlur() {
         {1 / 16.0f, 2 / 16.0f, 1 / 16.0f}
     };
 
-    Pixel **temporary = new Pixel*[height];
+    Pixel **temporary = new Pixel*[height]; // временный буфер
     for (int i = 0; i < height; ++i) {
         temporary[i] = new Pixel[width];
     }
 
-    for (int y = 1; y < height - 1; ++y) {
-        for (int x = 1; x < width - 1; ++x) {
-            float red = 0.0f, green = 0.0f, blue = 0.0f;
-            for (int ky = -1; ky <= 1; ++ky) {
-                for (int kx = -1; kx <= 1; ++kx) {
-                    Pixel &p = pixels[y + ky][x + kx];
-                    red += p.red * kernel[ky + 1][kx + 1];
-                    green += p.green * kernel[ky + 1][kx + 1];
-                    blue += p.blue * kernel[ky + 1][kx + 1];
-                }
-            }
-            temporary[y][x].red = static_cast<uint8_t>(red);
-            temporary[y][x].green = static_cast<uint8_t>(green);
-            temporary[y][x].blue = static_cast<uint8_t>(blue);
-        }
+    unsigned int numThr = std::thread::hardware_concurrency();
+    if (numThr == 0) numThr = 2;
+
+    int chunk = height / numThr;
+    int rem   = height % numThr;
+
+    std::vector<std::thread> threads;
+    threads.reserve(numThr);
+
+   int cur = 0;
+    for (unsigned int t = 0; t < numThr; ++t) {
+        int start = cur;
+        int end   = cur + chunk + (t < rem ? 1 : 0);
+        threads.emplace_back(
+            gaussianBlurWorker,
+            pixels,       // исходный массив
+            temporary,    // буфер для результатов
+            width,
+            height,
+            start,
+            end
+        );
+        cur = end;
     }
+
+    // 4) Ждём завершения всех «воркеров»
+    for (auto &th : threads) {
+        th.join();
+    } 
 
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
