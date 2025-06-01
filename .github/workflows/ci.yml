@@ -23,9 +23,8 @@ jobs:
         run: |
           make
 
-      - name: Smoke test: run image_app with --help
+      - name: Smoke test
         run: |
-          # Проверим, что бинарник собрался и запускается без ошибок (выводит help/usage)
           ./image_app || true
 
       - name: Clean up
