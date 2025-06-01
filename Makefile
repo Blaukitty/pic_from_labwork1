@@ -2,10 +2,9 @@ CXX := g++
 CXXFLAGS := -std=c++17 -O2 -Wall -I. -isystem /usr/include/gtest
 LDFLAGS := -lgtest -lgtest_main -pthread
 
-SRCS := Image.cpp
+SRCS := image_with_thread.cpp cli.cpp
 OBJS := $(SRCS:.cpp=.o)
-TEST_SRCS := tests/ImageTest.cpp
-TEST_BIN := ImageTest
+TARGET := image_app
 
 all: $(TEST_BIN)
 
